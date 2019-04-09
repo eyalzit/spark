@@ -31,12 +31,12 @@ import scala.language.{implicitConversions, postfixOps}
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.mockito.ArgumentCaptor
-import org.mockito.Matchers.{eq => meq, _}
-import org.mockito.Mockito._
+import org.mockito.ArgumentMatchers.{any, anyLong, eq => meq}
+import org.mockito.Mockito.{times, verify, when}
 import org.scalatest.{BeforeAndAfter, BeforeAndAfterEach, PrivateMethodTester}
 import org.scalatest.concurrent.Eventually
 import org.scalatest.concurrent.Eventually._
-import org.scalatest.mock.MockitoSugar
+import org.scalatest.mockito.MockitoSugar
 
 import org.apache.spark.{SparkConf, SparkException, SparkFunSuite}
 import org.apache.spark.streaming.scheduler._
@@ -83,7 +83,7 @@ abstract class CommonWriteAheadLogTests(
 
     val logDirectoryPath = new Path(testDir)
     val fileSystem = HdfsUtils.getFileSystemForPath(logDirectoryPath, hadoopConf)
-    assert(fileSystem.exists(logDirectoryPath) === true)
+    assert(fileSystem.exists(logDirectoryPath))
 
     // Read data using manager and verify
     val readData = readDataUsingWriteAheadLog(testDir, closeFileAfterWrite, allowBatching)
@@ -484,7 +484,7 @@ class BatchedWriteAheadLogSuite extends CommonWriteAheadLogTests(
   // we make the write requests in separate threads so that we don't block the test thread
   private def writeAsync(wal: WriteAheadLog, event: String, time: Long): Promise[Unit] = {
     val p = Promise[Unit]()
-    p.completeWith(Future {
+    p.completeWith(Future[Unit] {
       val v = wal.write(event, time)
       assert(v === walHandle)
     }(walBatchingExecutionContext))

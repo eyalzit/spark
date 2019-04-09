@@ -48,8 +48,6 @@ class PowerIterationClusteringModel @Since("1.3.0") (
   override def save(sc: SparkContext, path: String): Unit = {
     PowerIterationClusteringModel.SaveLoadV1_0.save(sc, this, path)
   }
-
-  override protected def formatVersion: String = "1.0"
 }
 
 @Since("1.4.0")
@@ -103,9 +101,9 @@ object PowerIterationClusteringModel extends Loader[PowerIterationClusteringMode
 
 /**
  * Power Iteration Clustering (PIC), a scalable graph clustering algorithm developed by
- * <a href="http://www.icml2010.org/papers/387.pdf">Lin and Cohen</a>. From the abstract: PIC finds
- * a very low-dimensional embedding of a dataset using truncated power iteration on a normalized
- * pair-wise similarity matrix of the data.
+ * <a href="http://www.cs.cmu.edu/~frank/papers/icml2010-pic-final.pdf">Lin and Cohen</a>.
+ * From the abstract: PIC finds a very low-dimensional embedding of a dataset using
+ * truncated power iteration on a normalized pair-wise similarity matrix of the data.
  *
  * @param k Number of clusters.
  * @param maxIterations Maximum number of iterations of the PIC algorithm.
@@ -378,6 +376,27 @@ object PowerIterationClustering extends Logging {
       logInfo(s"$msgPrefix: delta = $delta.")
       diffDelta = math.abs(delta - prevDelta)
       logInfo(s"$msgPrefix: diff(delta) = $diffDelta.")
+
+      if (math.abs(diffDelta) < tol) {
+        /**
+         * Power Iteration fails to converge if absolute value of top 2 eigen values are equal,
+         * but with opposite sign. The resultant vector flip-flops between two vectors.
+         * We should give an exception, if we detect the failure of the convergence of the
+         * power iteration
+         */
+
+        // Rayleigh quotient = x^tAx / x^tx
+        val xTAx = curG.joinVertices(v) {
+          case (_, x, y) => x * y
+        }.vertices.values.sum()
+        val xTx = curG.vertices.mapValues(x => x * x).values.sum()
+        val rayleigh = xTAx / xTx
+
+        if (math.abs(norm - math.abs(rayleigh)) > tol) {
+          logWarning(s"Power Iteration fail to converge. delta = ${delta}," +
+            s" difference delta = ${diffDelta} and norm = ${norm}")
+        }
+      }
       // update v
       curG = Graph(VertexRDD(v1), g.edges)
       prevDelta = delta

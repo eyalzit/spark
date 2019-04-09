@@ -26,14 +26,18 @@ import scala.util.control.NonFatal
 
 import org.apache.spark.SparkException
 import org.apache.spark.internal.Logging
+import org.apache.spark.internal.config.Network.RPC_NETTY_DISPATCHER_NUM_THREADS
 import org.apache.spark.network.client.RpcResponseCallback
 import org.apache.spark.rpc._
 import org.apache.spark.util.ThreadUtils
 
 /**
  * A message dispatcher, responsible for routing RPC messages to the appropriate endpoint(s).
+ *
+ * @param numUsableCores Number of CPU cores allocated to the process, for sizing the thread pool.
+ *                       If 0, will consider the available CPUs on the host.
  */
-private[netty] class Dispatcher(nettyEnv: NettyRpcEnv) extends Logging {
+private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) extends Logging {
 
   private class EndpointData(
       val name: String,
@@ -109,8 +113,11 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv) extends Logging {
     val iter = endpoints.keySet().iterator()
     while (iter.hasNext) {
       val name = iter.next
-      postMessage(name, message, (e) => logWarning(s"Message $message dropped. ${e.getMessage}"))
-    }
+        postMessage(name, message, (e) => { e match {
+          case e: RpcEnvStoppedException => logDebug (s"Message $message dropped. ${e.getMessage}")
+          case e: Throwable => logWarning(s"Message $message dropped. ${e.getMessage}")
+        }}
+      )}
   }
 
   /** Posts a message sent by a remote endpoint. */
@@ -189,8 +196,10 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv) extends Logging {
 
   /** Thread pool used for dispatching messages. */
   private val threadpool: ThreadPoolExecutor = {
-    val numThreads = nettyEnv.conf.getInt("spark.rpc.netty.dispatcher.numThreads",
-      math.max(2, Runtime.getRuntime.availableProcessors()))
+    val availableCores =
+      if (numUsableCores > 0) numUsableCores else Runtime.getRuntime.availableProcessors()
+    val numThreads = nettyEnv.conf.get(RPC_NETTY_DISPATCHER_NUM_THREADS)
+      .getOrElse(math.max(2, availableCores))
     val pool = ThreadUtils.newDaemonFixedThreadPool(numThreads, "dispatcher-event-loop")
     for (i <- 0 until numThreads) {
       pool.execute(new MessageLoop)

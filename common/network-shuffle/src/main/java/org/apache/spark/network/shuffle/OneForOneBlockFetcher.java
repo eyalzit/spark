@@ -17,18 +17,13 @@
 
 package org.apache.spark.network.shuffle;
 
-import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
-import java.nio.channels.WritableByteChannel;
 import java.util.Arrays;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.spark.network.buffer.FileSegmentManagedBuffer;
 import org.apache.spark.network.buffer.ManagedBuffer;
 import org.apache.spark.network.client.ChunkReceivedCallback;
 import org.apache.spark.network.client.RpcResponseCallback;
@@ -57,10 +52,20 @@ public class OneForOneBlockFetcher {
   private final String[] blockIds;
   private final BlockFetchingListener listener;
   private final ChunkReceivedCallback chunkCallback;
-  private TransportConf transportConf = null;
-  private File[] shuffleFiles = null;
+  private final TransportConf transportConf;
+  private final DownloadFileManager downloadFileManager;
 
   private StreamHandle streamHandle = null;
+
+  public OneForOneBlockFetcher(
+    TransportClient client,
+    String appId,
+    String execId,
+    String[] blockIds,
+    BlockFetchingListener listener,
+    TransportConf transportConf) {
+    this(client, appId, execId, blockIds, listener, transportConf, null);
+  }
 
   public OneForOneBlockFetcher(
       TransportClient client,
@@ -69,18 +74,14 @@ public class OneForOneBlockFetcher {
       String[] blockIds,
       BlockFetchingListener listener,
       TransportConf transportConf,
-      File[] shuffleFiles) {
+      DownloadFileManager downloadFileManager) {
     this.client = client;
     this.openMessage = new OpenBlocks(appId, execId, blockIds);
     this.blockIds = blockIds;
     this.listener = listener;
     this.chunkCallback = new ChunkCallback();
     this.transportConf = transportConf;
-    if (shuffleFiles != null) {
-      this.shuffleFiles = shuffleFiles;
-      assert this.shuffleFiles.length == blockIds.length:
-        "Number of shuffle files should equal to blocks";
-    }
+    this.downloadFileManager = downloadFileManager;
   }
 
   /** Callback invoked on receipt of each chunk. We equate a single chunk to a single block. */
@@ -119,9 +120,9 @@ public class OneForOneBlockFetcher {
           // Immediately request all chunks -- we expect that the total size of the request is
           // reasonable due to higher level chunking in [[ShuffleBlockFetcherIterator]].
           for (int i = 0; i < streamHandle.numChunks; i++) {
-            if (shuffleFiles != null) {
+            if (downloadFileManager != null) {
               client.stream(OneForOneStreamManager.genStreamChunkId(streamHandle.streamId, i),
-                new DownloadCallback(shuffleFiles[i], i));
+                new DownloadCallback(i));
             } else {
               client.fetchChunk(streamHandle.streamId, i, chunkCallback);
             }
@@ -153,27 +154,29 @@ public class OneForOneBlockFetcher {
 
   private class DownloadCallback implements StreamCallback {
 
-    private WritableByteChannel channel = null;
-    private File targetFile = null;
+    private DownloadFileWritableChannel channel = null;
+    private DownloadFile targetFile = null;
     private int chunkIndex;
 
-    public DownloadCallback(File targetFile, int chunkIndex) throws IOException {
-      this.targetFile = targetFile;
-      this.channel = Channels.newChannel(new FileOutputStream(targetFile));
+    DownloadCallback(int chunkIndex) throws IOException {
+      this.targetFile = downloadFileManager.createTempFile(transportConf);
+      this.channel = targetFile.openForWriting();
       this.chunkIndex = chunkIndex;
     }
 
     @Override
     public void onData(String streamId, ByteBuffer buf) throws IOException {
-      channel.write(buf);
+      while (buf.hasRemaining()) {
+        channel.write(buf);
+      }
     }
 
     @Override
     public void onComplete(String streamId) throws IOException {
-      channel.close();
-      ManagedBuffer buffer = new FileSegmentManagedBuffer(transportConf, targetFile, 0,
-        targetFile.length());
-      listener.onBlockFetchSuccess(blockIds[chunkIndex], buffer);
+      listener.onBlockFetchSuccess(blockIds[chunkIndex], channel.closeAndRead());
+      if (!downloadFileManager.registerTempFileToClean(targetFile)) {
+        targetFile.delete();
+      }
     }
 
     @Override
@@ -182,6 +185,7 @@ public class OneForOneBlockFetcher {
       // On receipt of a failure, fail every block from chunkIndex onwards.
       String[] remainingBlockIds = Arrays.copyOfRange(blockIds, chunkIndex, blockIds.length);
       failRemainingBlocks(remainingBlockIds, cause);
+      targetFile.delete();
     }
   }
 }

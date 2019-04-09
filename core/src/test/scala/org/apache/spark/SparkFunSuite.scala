@@ -20,19 +20,53 @@ package org.apache.spark
 // scalastyle:off
 import java.io.File
 
+import org.apache.log4j.{Appender, Level, Logger}
 import org.scalatest.{BeforeAndAfterAll, FunSuite, Outcome}
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.util.AccumulatorContext
+import org.apache.spark.internal.config.Tests.IS_TESTING
+import org.apache.spark.util.{AccumulatorContext, Utils}
 
 /**
  * Base abstract class for all unit tests in Spark for handling common functionality.
+ *
+ * Thread audit happens normally here automatically when a new test suite created.
+ * The only prerequisite for that is that the test class must extend [[SparkFunSuite]].
+ *
+ * It is possible to override the default thread audit behavior by setting enableAutoThreadAudit
+ * to false and manually calling the audit methods, if desired. For example:
+ *
+ * class MyTestSuite extends SparkFunSuite {
+ *
+ *   override val enableAutoThreadAudit = false
+ *
+ *   protected override def beforeAll(): Unit = {
+ *     doThreadPreAudit()
+ *     super.beforeAll()
+ *   }
+ *
+ *   protected override def afterAll(): Unit = {
+ *     super.afterAll()
+ *     doThreadPostAudit()
+ *   }
+ * }
  */
 abstract class SparkFunSuite
   extends FunSuite
   with BeforeAndAfterAll
+  with ThreadAudit
   with Logging {
 // scalastyle:on
+
+  protected val enableAutoThreadAudit = true
+
+  protected override def beforeAll(): Unit = {
+    System.setProperty(IS_TESTING.key, "true")
+    if (enableAutoThreadAudit) {
+      doThreadPreAudit()
+    }
+    super.beforeAll()
+  }
 
   protected override def afterAll(): Unit = {
     try {
@@ -40,6 +74,9 @@ abstract class SparkFunSuite
       AccumulatorContext.clear()
     } finally {
       super.afterAll()
+      if (enableAutoThreadAudit) {
+        doThreadPostAudit()
+      }
     }
   }
 
@@ -71,4 +108,38 @@ abstract class SparkFunSuite
     }
   }
 
+  /**
+   * Creates a temporary directory, which is then passed to `f` and will be deleted after `f`
+   * returns.
+   */
+  protected def withTempDir(f: File => Unit): Unit = {
+    val dir = Utils.createTempDir()
+    try f(dir) finally {
+      Utils.deleteRecursively(dir)
+    }
+  }
+
+  /**
+   * Adds a log appender and optionally sets a log level to the root logger or the logger with
+   * the specified name, then executes the specified function, and in the end removes the log
+   * appender and restores the log level if necessary.
+   */
+  protected def withLogAppender(
+      appender: Appender,
+      loggerName: Option[String] = None,
+      level: Option[Level] = None)(
+      f: => Unit): Unit = {
+    val logger = loggerName.map(Logger.getLogger).getOrElse(Logger.getRootLogger)
+    val restoreLevel = logger.getLevel
+    logger.addAppender(appender)
+    if (level.isDefined) {
+      logger.setLevel(level.get)
+    }
+    try f finally {
+      logger.removeAppender(appender)
+      if (level.isDefined) {
+        logger.setLevel(restoreLevel)
+      }
+    }
+  }
 }

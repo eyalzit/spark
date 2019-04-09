@@ -25,7 +25,7 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{BlockLocation, FileStatus, Path, RawLocalFileSystem}
 import org.apache.hadoop.mapreduce.Job
 
-import org.apache.spark.{SparkConf, SparkException}
+import org.apache.spark.SparkException
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
@@ -244,7 +244,7 @@ class FileSourceStrategySuite extends QueryTest with SharedSQLContext with Predi
     val df2 = table.where("(p1 + c2) = 2 AND c1 = 1")
     // Filter on data only are advisory so we have to reevaluate.
     assert(getPhysicalFilters(df2) contains resolve(df2, "c1 = 1"))
-    // Need to evalaute filters that are not pushed down.
+    // Need to evaluate filters that are not pushed down.
     assert(getPhysicalFilters(df2) contains resolve(df2, "(p1 + c2) = 2"))
   }
 
@@ -401,7 +401,7 @@ class FileSourceStrategySuite extends QueryTest with SharedSQLContext with Predi
           sparkSession = spark,
           rootPathsSpecified = Seq(new Path(tempDir)),
           parameters = Map.empty[String, String],
-          partitionSchema = None)
+          userSpecifiedSchema = None)
         // This should not fail.
         fileCatalog.listLeafFiles(Seq(new Path(tempDir)))
 
@@ -556,7 +556,7 @@ class FileSourceStrategySuite extends QueryTest with SharedSQLContext with Predi
 
     if (buckets > 0) {
       val bucketed = df.queryExecution.analyzed transform {
-        case l @ LogicalRelation(r: HadoopFsRelation, _, _) =>
+        case l @ LogicalRelation(r: HadoopFsRelation, _, _, _) =>
           l.copy(relation =
             r.copy(bucketSpec =
               Some(BucketSpec(numBuckets = buckets, "c1" :: Nil, Nil)))(r.sparkSession))
@@ -614,7 +614,7 @@ class TestFileFormat extends TextBasedFileFormat {
       job: Job,
       options: Map[String, String],
       dataSchema: StructType): OutputWriterFactory = {
-    throw new NotImplementedError("JUST FOR TESTING")
+    throw new UnsupportedOperationException("JUST FOR TESTING")
   }
 
   override def buildReader(

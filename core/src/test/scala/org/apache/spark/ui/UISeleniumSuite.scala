@@ -39,6 +39,9 @@ import org.apache.spark._
 import org.apache.spark.LocalSparkContext._
 import org.apache.spark.api.java.StorageLevels
 import org.apache.spark.deploy.history.HistoryServerSuite
+import org.apache.spark.internal.config._
+import org.apache.spark.internal.config.Status._
+import org.apache.spark.internal.config.UI._
 import org.apache.spark.shuffle.FetchFailedException
 import org.apache.spark.status.api.v1.{JacksonMessageWriter, RDDDataDistribution, StageStatus}
 
@@ -97,14 +100,18 @@ class UISeleniumSuite extends SparkFunSuite with WebBrowser with Matchers with B
    * Create a test SparkContext with the SparkUI enabled.
    * It is safe to `get` the SparkUI directly from the SparkContext returned here.
    */
-  private def newSparkContext(killEnabled: Boolean = true): SparkContext = {
+  private def newSparkContext(
+      killEnabled: Boolean = true,
+      master: String = "local",
+      additionalConfs: Map[String, String] = Map.empty): SparkContext = {
     val conf = new SparkConf()
-      .setMaster("local")
+      .setMaster(master)
       .setAppName("test")
-      .set("spark.ui.enabled", "true")
-      .set("spark.ui.port", "0")
-      .set("spark.ui.killEnabled", killEnabled.toString)
-      .set("spark.memory.offHeap.size", "64m")
+      .set(UI_ENABLED, true)
+      .set(UI_PORT, 0)
+      .set(UI_KILL_ENABLED, killEnabled)
+      .set(MEMORY_OFFHEAP_SIZE.key, "64m")
+    additionalConfs.foreach { case (k, v) => conf.set(k, v) }
     val sc = new SparkContext(conf)
     assert(sc.ui.isDefined)
     sc
@@ -129,11 +136,12 @@ class UISeleniumSuite extends SparkFunSuite with WebBrowser with Matchers with B
 
       val storageJson = getJson(ui, "storage/rdd")
       storageJson.children.length should be (1)
-      (storageJson \ "storageLevel").extract[String] should be (StorageLevels.DISK_ONLY.description)
+      (storageJson.children.head \ "storageLevel").extract[String] should be (
+        StorageLevels.DISK_ONLY.description)
       val rddJson = getJson(ui, "storage/rdd/0")
       (rddJson  \ "storageLevel").extract[String] should be (StorageLevels.DISK_ONLY.description)
 
-      rdd.unpersist()
+      rdd.unpersist(blocking = true)
       rdd.persist(StorageLevels.MEMORY_ONLY).count()
       eventually(timeout(5 seconds), interval(50 milliseconds)) {
         goToUi(ui, "/storage")
@@ -148,7 +156,7 @@ class UISeleniumSuite extends SparkFunSuite with WebBrowser with Matchers with B
 
       val updatedStorageJson = getJson(ui, "storage/rdd")
       updatedStorageJson.children.length should be (1)
-      (updatedStorageJson \ "storageLevel").extract[String] should be (
+      (updatedStorageJson.children.head \ "storageLevel").extract[String] should be (
         StorageLevels.MEMORY_ONLY.description)
       val updatedRddJson = getJson(ui, "storage/rdd/0")
       (updatedRddJson  \ "storageLevel").extract[String] should be (
@@ -168,7 +176,7 @@ class UISeleniumSuite extends SparkFunSuite with WebBrowser with Matchers with B
       dist0.onHeapMemoryUsed should not be (Some(0L))
       dist0.offHeapMemoryUsed should be (Some(0L))
 
-      rdd.unpersist()
+      rdd.unpersist(blocking = true)
       rdd.persist(StorageLevels.OFF_HEAP).count()
       val updatedStorageJson1 = getJson(ui, "storage/rdd")
       updatedStorageJson1.children.length should be (1)
@@ -202,7 +210,7 @@ class UISeleniumSuite extends SparkFunSuite with WebBrowser with Matchers with B
       }
       val stageJson = getJson(sc.ui.get, "stages")
       stageJson.children.length should be (1)
-      (stageJson \ "status").extract[String] should be (StageStatus.FAILED.name())
+      (stageJson.children.head \ "status").extract[String] should be (StageStatus.FAILED.name())
 
       // Regression test for SPARK-2105
       class NotSerializable
@@ -323,11 +331,11 @@ class UISeleniumSuite extends SparkFunSuite with WebBrowser with Matchers with B
         find(cssSelector(".progress-cell .progress")).get.text should be ("2/2 (1 failed)")
       }
       val jobJson = getJson(sc.ui.get, "jobs")
-      (jobJson \ "numTasks").extract[Int]should be (2)
-      (jobJson \ "numCompletedTasks").extract[Int] should be (3)
-      (jobJson \ "numFailedTasks").extract[Int] should be (1)
-      (jobJson \ "numCompletedStages").extract[Int] should be (2)
-      (jobJson \ "numFailedStages").extract[Int] should be (1)
+      (jobJson \\ "numTasks").extract[Int]should be (2)
+      (jobJson \\ "numCompletedTasks").extract[Int] should be (3)
+      (jobJson \\ "numFailedTasks").extract[Int] should be (1)
+      (jobJson \\ "numCompletedStages").extract[Int] should be (2)
+      (jobJson \\ "numFailedStages").extract[Int] should be (1)
       val stageJson = getJson(sc.ui.get, "stages")
 
       for {
@@ -528,10 +536,11 @@ class UISeleniumSuite extends SparkFunSuite with WebBrowser with Matchers with B
     val conf = new SparkConf()
       .setMaster("local")
       .setAppName("test")
-      .set("spark.ui.enabled", "true")
-      .set("spark.ui.port", "0")
-      .set("spark.ui.retainedStages", "3")
-      .set("spark.ui.retainedJobs", "2")
+      .set(UI_ENABLED, true)
+      .set(UI_PORT, 0)
+      .set(MAX_RETAINED_STAGES, 3)
+      .set(MAX_RETAINED_JOBS, 2)
+      .set(ASYNC_TRACKING_ENABLED, false)
     val sc = new SparkContext(conf)
     assert(sc.ui.isDefined)
 
@@ -653,7 +662,7 @@ class UISeleniumSuite extends SparkFunSuite with WebBrowser with Matchers with B
         sc.ui.get.webUrl + "/api/v1/applications"))
       val appListJsonAst = JsonMethods.parse(appListRawJson)
       appListJsonAst.children.length should be (1)
-      val attempts = (appListJsonAst \ "attempts").children
+      val attempts = (appListJsonAst.children.head \ "attempts").children
       attempts.size should be (1)
       (attempts(0) \ "completed").extract[Boolean] should be (false)
       parseDate(attempts(0) \ "startTime") should be (sc.startTime)
@@ -670,34 +679,78 @@ class UISeleniumSuite extends SparkFunSuite with WebBrowser with Matchers with B
         sc.parallelize(Seq(1, 2, 3)).map(identity).groupBy(identity).map(identity).groupBy(identity)
       rdd.count()
 
-      val stage0 = Source.fromURL(sc.ui.get.webUrl +
-        "/stages/stage/?id=0&attempt=0&expandDagViz=true").mkString
-      assert(stage0.contains("digraph G {\n  subgraph clusterstage_0 {\n    " +
-        "label=&quot;Stage 0&quot;;\n    subgraph "))
-      assert(stage0.contains("{\n      label=&quot;parallelize&quot;;\n      " +
-        "0 [label=&quot;ParallelCollectionRDD [0]"))
-      assert(stage0.contains("{\n      label=&quot;map&quot;;\n      " +
-        "1 [label=&quot;MapPartitionsRDD [1]"))
-      assert(stage0.contains("{\n      label=&quot;groupBy&quot;;\n      " +
-        "2 [label=&quot;MapPartitionsRDD [2]"))
+      eventually(timeout(5 seconds), interval(100 milliseconds)) {
+        val stage0 = Source.fromURL(sc.ui.get.webUrl +
+          "/stages/stage/?id=0&attempt=0&expandDagViz=true").mkString
+        assert(stage0.contains("digraph G {\n  subgraph clusterstage_0 {\n    " +
+          "label=&quot;Stage 0&quot;;\n    subgraph "))
+        assert(stage0.contains("{\n      label=&quot;parallelize&quot;;\n      " +
+          "0 [label=&quot;ParallelCollectionRDD [0]"))
+        assert(stage0.contains("{\n      label=&quot;map&quot;;\n      " +
+          "1 [label=&quot;MapPartitionsRDD [1]"))
+        assert(stage0.contains("{\n      label=&quot;groupBy&quot;;\n      " +
+          "2 [label=&quot;MapPartitionsRDD [2]"))
 
-      val stage1 = Source.fromURL(sc.ui.get.webUrl +
-        "/stages/stage/?id=1&attempt=0&expandDagViz=true").mkString
-      assert(stage1.contains("digraph G {\n  subgraph clusterstage_1 {\n    " +
-        "label=&quot;Stage 1&quot;;\n    subgraph "))
-      assert(stage1.contains("{\n      label=&quot;groupBy&quot;;\n      " +
-        "3 [label=&quot;ShuffledRDD [3]"))
-      assert(stage1.contains("{\n      label=&quot;map&quot;;\n      " +
-        "4 [label=&quot;MapPartitionsRDD [4]"))
-      assert(stage1.contains("{\n      label=&quot;groupBy&quot;;\n      " +
-        "5 [label=&quot;MapPartitionsRDD [5]"))
+        val stage1 = Source.fromURL(sc.ui.get.webUrl +
+          "/stages/stage/?id=1&attempt=0&expandDagViz=true").mkString
+        assert(stage1.contains("digraph G {\n  subgraph clusterstage_1 {\n    " +
+          "label=&quot;Stage 1&quot;;\n    subgraph "))
+        assert(stage1.contains("{\n      label=&quot;groupBy&quot;;\n      " +
+          "3 [label=&quot;ShuffledRDD [3]"))
+        assert(stage1.contains("{\n      label=&quot;map&quot;;\n      " +
+          "4 [label=&quot;MapPartitionsRDD [4]"))
+        assert(stage1.contains("{\n      label=&quot;groupBy&quot;;\n      " +
+          "5 [label=&quot;MapPartitionsRDD [5]"))
 
-      val stage2 = Source.fromURL(sc.ui.get.webUrl +
-        "/stages/stage/?id=2&attempt=0&expandDagViz=true").mkString
-      assert(stage2.contains("digraph G {\n  subgraph clusterstage_2 {\n    " +
-        "label=&quot;Stage 2&quot;;\n    subgraph "))
-      assert(stage2.contains("{\n      label=&quot;groupBy&quot;;\n      " +
-        "6 [label=&quot;ShuffledRDD [6]"))
+        val stage2 = Source.fromURL(sc.ui.get.webUrl +
+          "/stages/stage/?id=2&attempt=0&expandDagViz=true").mkString
+        assert(stage2.contains("digraph G {\n  subgraph clusterstage_2 {\n    " +
+          "label=&quot;Stage 2&quot;;\n    subgraph "))
+        assert(stage2.contains("{\n      label=&quot;groupBy&quot;;\n      " +
+          "6 [label=&quot;ShuffledRDD [6]"))
+      }
+    }
+  }
+
+  test("stages page should show skipped stages") {
+    withSpark(newSparkContext()) { sc =>
+      val rdd = sc.parallelize(0 to 100, 100).repartition(10).cache()
+      rdd.count()
+      rdd.count()
+
+      eventually(timeout(5 seconds), interval(50 milliseconds)) {
+        goToUi(sc, "/stages")
+        find(id("skipped")).get.text should be("Skipped Stages (1)")
+      }
+      val stagesJson = getJson(sc.ui.get, "stages")
+      stagesJson.children.size should be (4)
+      val stagesStatus = stagesJson.children.map(_ \ "status")
+      stagesStatus.count(_ == JString(StageStatus.SKIPPED.name())) should be (1)
+    }
+  }
+
+  test("Staleness of Spark UI should not last minutes or hours") {
+    withSpark(newSparkContext(
+      master = "local[2]",
+      // Set a small heart beat interval to make the test fast
+      additionalConfs = Map(
+        EXECUTOR_HEARTBEAT_INTERVAL.key -> "10ms",
+        LIVE_ENTITY_UPDATE_MIN_FLUSH_PERIOD.key -> "10ms"))) { sc =>
+      sc.setLocalProperty(SparkContext.SPARK_JOB_INTERRUPT_ON_CANCEL, "true")
+      val f = sc.parallelize(1 to 1000, 1000).foreachAsync { _ =>
+        // Make the task never finish so there won't be any task start/end events after the first 2
+        // tasks start.
+        Thread.sleep(300000)
+      }
+      try {
+        eventually(timeout(10.seconds)) {
+          val jobsJson = getJson(sc.ui.get, "jobs")
+          jobsJson.children.length should be (1)
+          (jobsJson.children.head \ "numActiveTasks").extract[Int] should be (2)
+        }
+      } finally {
+        f.cancel()
+      }
     }
   }
 

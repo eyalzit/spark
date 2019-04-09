@@ -24,15 +24,18 @@ import scala.collection.mutable
 
 import org.scalatest.BeforeAndAfter
 import org.scalatest.Matchers._
+import org.scalatest.concurrent.{Signaler, ThreadSignaler, TimeLimits}
 import org.scalatest.concurrent.Eventually._
-import org.scalatest.concurrent.Timeouts._
 import org.scalatest.time.SpanSugar._
 
 import org.apache.spark.{SparkConf, SparkException, SparkFunSuite}
 import org.apache.spark.storage.StreamBlockId
 import org.apache.spark.util.ManualClock
 
-class BlockGeneratorSuite extends SparkFunSuite with BeforeAndAfter {
+class BlockGeneratorSuite extends SparkFunSuite with BeforeAndAfter with TimeLimits {
+
+  // Necessary to make ScalaTest 3.x interrupt a thread on the JVM like ScalaTest 2.2.x
+  implicit val defaultSignaler: Signaler = ThreadSignaler
 
   private val blockIntervalMs = 10
   private val conf = new SparkConf().set("spark.streaming.blockInterval", s"${blockIntervalMs}ms")
@@ -63,7 +66,7 @@ class BlockGeneratorSuite extends SparkFunSuite with BeforeAndAfter {
 
     // Verify start marks the generator active, but does not call the callbacks
     blockGenerator.start()
-    assert(blockGenerator.isActive() === true, "block generator active after start()")
+    assert(blockGenerator.isActive(), "block generator active after start()")
     assert(blockGenerator.isStopped() === false, "block generator stopped after start()")
     withClue("callbacks called before adding data") {
       assert(listener.onAddDataCalled === false)
@@ -82,8 +85,8 @@ class BlockGeneratorSuite extends SparkFunSuite with BeforeAndAfter {
     clock.advance(blockIntervalMs)  // advance clock to generate blocks
     withClue("blocks not generated or pushed") {
       eventually(timeout(1 second)) {
-        assert(listener.onGenerateBlockCalled === true)
-        assert(listener.onPushBlockCalled === true)
+        assert(listener.onGenerateBlockCalled)
+        assert(listener.onPushBlockCalled)
       }
     }
     listener.pushedData.asScala.toSeq should contain theSameElementsInOrderAs (data1)
@@ -93,7 +96,7 @@ class BlockGeneratorSuite extends SparkFunSuite with BeforeAndAfter {
     val data2 = 11 to 20
     val metadata2 = data2.map { _.toString }
     data2.zip(metadata2).foreach { case (d, m) => blockGenerator.addDataWithCallback(d, m) }
-    assert(listener.onAddDataCalled === true)
+    assert(listener.onAddDataCalled)
     listener.addedData.asScala.toSeq should contain theSameElementsInOrderAs (data2)
     listener.addedMetadata.asScala.toSeq should contain theSameElementsInOrderAs (metadata2)
     clock.advance(blockIntervalMs)  // advance clock to generate blocks
@@ -119,7 +122,7 @@ class BlockGeneratorSuite extends SparkFunSuite with BeforeAndAfter {
     val thread = stopBlockGenerator(blockGenerator)
     eventually(timeout(1 second), interval(10 milliseconds)) {
       clock.advance(blockIntervalMs)
-      assert(blockGenerator.isStopped() === true)
+      assert(blockGenerator.isStopped())
     }
     thread.join()
 
@@ -145,7 +148,7 @@ class BlockGeneratorSuite extends SparkFunSuite with BeforeAndAfter {
     blockGenerator = new BlockGenerator(listener, 0, conf, clock)
     require(listener.onGenerateBlockCalled === false)
     blockGenerator.start()
-    assert(blockGenerator.isActive() === true, "block generator")
+    assert(blockGenerator.isActive(), "block generator")
     assert(blockGenerator.isStopped() === false)
 
     val data = 1 to 1000
@@ -195,7 +198,7 @@ class BlockGeneratorSuite extends SparkFunSuite with BeforeAndAfter {
       clock.advance(blockIntervalMs)
       assert(thread.isAlive === false)
     }
-    assert(blockGenerator.isStopped() === true) // generator has finally been completely stopped
+    assert(blockGenerator.isStopped()) // generator has finally been completely stopped
     assert(listener.pushedData.asScala.toSeq === data, "All data not pushed by stop()")
   }
 
@@ -211,7 +214,7 @@ class BlockGeneratorSuite extends SparkFunSuite with BeforeAndAfter {
     assert(listener.onErrorCalled === false)
     blockGenerator.addData(1)
     eventually(timeout(1 second), interval(10 milliseconds)) {
-      assert(listener.onErrorCalled === true)
+      assert(listener.onErrorCalled)
     }
     blockGenerator.stop()
   }
